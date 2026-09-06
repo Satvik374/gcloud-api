@@ -141,3 +141,63 @@ class OpenAIModelItem(BaseModel):
 class OpenAIModelListResponse(BaseModel):
     object: str = "list"
     data: List[OpenAIModelItem]
+
+
+# ----------------- Anthropic Messages Compatibility Schemas -----------------
+
+class AnthropicMessageParam(BaseModel):
+    role: str
+    content: Union[str, List[Dict[str, Any]]]
+
+    class Config:
+        extra = "allow"
+
+class AnthropicTool(BaseModel):
+    name: str
+    description: Optional[str] = None
+    input_schema: Optional[Dict[str, Any]] = None
+
+    class Config:
+        extra = "allow"
+
+class AnthropicMessageRequest(BaseModel):
+    model: str
+    messages: List[AnthropicMessageParam]
+    system: Optional[Union[str, List[Dict[str, Any]]]] = None
+    max_tokens: Optional[int] = Field(default=4096)
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    stream: Optional[bool] = False
+    stop_sequences: Optional[List[str]] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    class Config:
+        extra = "allow"
+
+class AnthropicUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+class AnthropicMessageResponse(BaseModel):
+    id: str
+    type: str = "message"
+    role: str = "assistant"
+    model: str
+    content: List[Dict[str, Any]]
+    stop_reason: Optional[str] = "end_turn"
+    stop_sequence: Optional[str] = None
+    usage: AnthropicUsage
+
+class AnthropicCountTokensRequest(BaseModel):
+    model: Optional[str] = "gemini-2.5-flash"
+    messages: List[AnthropicMessageParam]
+    system: Optional[Union[str, List[Dict[str, Any]]]] = None
+
+    class Config:
+        extra = "allow"
+
+class AnthropicCountTokensResponse(BaseModel):
+    input_tokens: int

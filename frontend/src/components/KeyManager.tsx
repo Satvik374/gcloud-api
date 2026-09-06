@@ -112,7 +112,7 @@ export const KeyManager: React.FC<KeyManagerProps> = ({
             API Key Management
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Generate and manage custom API keys to authenticate with your OpenAI-compatible Gemini Gateway.
+            Generate and manage custom API keys. Every key automatically works for both <strong>OpenAI</strong> and <strong>Anthropic / Claude Code</strong> endpoints.
           </p>
         </div>
         <button
@@ -133,10 +133,17 @@ export const KeyManager: React.FC<KeyManagerProps> = ({
               <h3 className="text-base font-semibold text-slate-900">Save Your Secret Key</h3>
             </div>
             
-            <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-lg mb-4 text-xs text-amber-800 flex items-start gap-2.5">
+            <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-lg mb-3 text-xs text-amber-800 flex items-start gap-2.5">
               <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               <span>
                 <strong>Crucial:</strong> Copy this API key right now. For security purposes, it is stored hashed and will <strong>never</strong> be displayed again.
+              </span>
+            </div>
+
+            <div className="p-2.5 bg-emerald-50 border border-emerald-200/80 rounded-lg mb-4 text-xs text-emerald-800 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>
+                <strong>Automatic Dual Support:</strong> This key automatically authenticates both <strong>OpenAI</strong> (Bearer) and <strong>Anthropic / Claude Code</strong> (x-api-key) endpoints!
               </span>
             </div>
 

@@ -13,12 +13,15 @@ from app.schemas import (
     ChatCompletionChoice,
     ChatResponseMessage,
     CompletionUsage,
-    ChatMessage
+    ChatMessage,
+    AnthropicMessageRequest,
+    AnthropicMessageResponse,
+    AnthropicUsage
 )
 
 logger = logging.getLogger("gateway.gemini")
 
-# Model mappings & aliases
+# Model mappings & aliases (both OpenAI and Anthropic / Claude)
 MODEL_ALIASES = {
     "gemini-1.5-flash": "gemini-2.5-flash",
     "gemini-1.5-pro": "gemini-2.5-pro",
@@ -27,6 +30,12 @@ MODEL_ALIASES = {
     "gpt-4o": "gemini-2.5-flash",
     "gpt-4o-mini": "gemini-2.5-flash-lite",
     "gpt-3.5-turbo": "gemini-2.5-flash-lite",
+    # Claude model aliases
+    "claude-3-7-sonnet": "gemini-2.5-pro",
+    "claude-3-5-sonnet": "gemini-2.5-pro",
+    "claude-3-opus": "gemini-2.5-pro",
+    "claude-3-5-haiku": "gemini-2.5-flash",
+    "claude-3-haiku": "gemini-2.5-flash-lite",
 }
 
 AVAILABLE_MODELS = [
@@ -73,10 +82,21 @@ AVAILABLE_MODELS = [
 ]
 
 def resolve_model_name(requested_model: str) -> str:
-    """Translates client model names and OpenAI aliases to Vertex AI model names."""
+    """Translates client model names (OpenAI & Anthropic / Claude) to Vertex AI model names."""
     clean_name = requested_model.lower().strip()
     if clean_name in MODEL_ALIASES:
         return MODEL_ALIASES[clean_name]
+
+    # Handle versioned Claude model IDs dynamically (e.g. claude-3-5-sonnet-20241022 or claude-3-7-sonnet@20250219)
+    if "claude-3-7-sonnet" in clean_name or "claude-3-5-sonnet" in clean_name or "claude-3-opus" in clean_name:
+        return "gemini-2.5-pro"
+    elif "claude-3-5-haiku" in clean_name:
+        return "gemini-2.5-flash"
+    elif "claude-3-haiku" in clean_name:
+        return "gemini-2.5-flash-lite"
+    elif clean_name.startswith("claude-"):
+        return "gemini-2.5-pro"
+
     return requested_model
 
 def map_finish_reason(reason: Optional[str]) -> str:
@@ -179,6 +199,146 @@ def build_gemini_payload(req: ChatCompletionRequest) -> Dict[str, Any]:
 
     if generation_config:
         payload["generationConfig"] = generation_config
+
+    return payload
+
+def build_gemini_payload_from_anthropic(req: AnthropicMessageRequest) -> Dict[str, Any]:
+    """
+    Translates Anthropic Messages API payload to Google Vertex AI Gemini contents and config.
+    Supports system instructions, multi-turn messages, vision images, and tools/function declarations.
+    """
+    # 1. System instruction extraction
+    system_parts = []
+    if req.system:
+        if isinstance(req.system, str):
+            if req.system.strip():
+                system_parts.append({"text": req.system.strip()})
+        elif isinstance(req.system, list):
+            for block in req.system:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text", "").strip()
+                    if text:
+                        system_parts.append({"text": text})
+
+    # Build map of tool_use_id -> tool_name from assistant messages for tool_result matching
+    tool_id_to_name: Dict[str, str] = {}
+    for m in req.messages:
+        if isinstance(m.content, list):
+            for b in m.content:
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    t_id = b.get("id")
+                    t_name = b.get("name")
+                    if t_id and t_name:
+                        tool_id_to_name[t_id] = t_name
+
+    # 2. Messages translation
+    raw_contents = []
+    for m in req.messages:
+        role = "user" if m.role.lower() == "user" else "model"
+        parts = []
+
+        if isinstance(m.content, str):
+            if m.content:
+                parts.append({"text": m.content})
+        elif isinstance(m.content, list):
+            for block in m.content:
+                if not isinstance(block, dict):
+                    continue
+                b_type = block.get("type")
+                if b_type == "text":
+                    txt = block.get("text", "")
+                    if txt:
+                        parts.append({"text": txt})
+                elif b_type == "image":
+                    src = block.get("source", {})
+                    if src.get("type") == "base64":
+                        parts.append({
+                            "inlineData": {
+                                "mimeType": src.get("media_type", "image/jpeg"),
+                                "data": src.get("data", "")
+                            }
+                        })
+                elif b_type == "tool_use":
+                    parts.append({
+                        "functionCall": {
+                            "name": block.get("name", "function_call"),
+                            "args": block.get("input", {})
+                        }
+                    })
+                elif b_type == "tool_result":
+                    tool_use_id = block.get("tool_use_id", "")
+                    tool_name = tool_id_to_name.get(tool_use_id) or block.get("name", "function_call")
+                    res_content = block.get("content", "")
+                    if isinstance(res_content, list):
+                        res_text = "\n".join(b.get("text", "") for b in res_content if isinstance(b, dict) and "text" in b)
+                    else:
+                        res_text = str(res_content)
+                    
+                    parts.append({
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": {
+                                "result": res_text,
+                                "is_error": block.get("is_error", False)
+                            }
+                        }
+                    })
+
+        if parts:
+            raw_contents.append({"role": role, "parts": parts})
+
+    # Merge consecutive messages with identical roles for Gemini compliance
+    merged_contents = []
+    for c in raw_contents:
+        if merged_contents and merged_contents[-1]["role"] == c["role"]:
+            merged_contents[-1]["parts"].extend(c["parts"])
+        else:
+            merged_contents.append(c)
+
+    payload: Dict[str, Any] = {
+        "contents": merged_contents
+    }
+
+    if system_parts:
+        payload["system_instruction"] = {"parts": system_parts}
+
+    # 3. Tools / function calling translation
+    if req.tools:
+        fn_declarations = []
+        for t in req.tools:
+            if not isinstance(t, dict):
+                continue
+            name = t.get("name")
+            if not name:
+                continue
+            desc = t.get("description", "")
+            schema = t.get("input_schema", {"type": "object", "properties": {}})
+            clean_schema = dict(schema) if isinstance(schema, dict) else {"type": "object"}
+            clean_schema.pop("$schema", None)
+            clean_schema.pop("additionalProperties", None)
+            fn_declarations.append({
+                "name": name,
+                "description": desc,
+                "parameters": clean_schema
+            })
+        if fn_declarations:
+            payload["tools"] = [{"functionDeclarations": fn_declarations}]
+
+    # 4. Generation config
+    gen_config: Dict[str, Any] = {}
+    if req.temperature is not None:
+        gen_config["temperature"] = req.temperature
+    if req.top_p is not None:
+        gen_config["topP"] = req.top_p
+    if req.top_k is not None:
+        gen_config["topK"] = req.top_k
+    if req.max_tokens is not None:
+        gen_config["maxOutputTokens"] = min(req.max_tokens, 8192)
+    if req.stop_sequences:
+        gen_config["stopSequences"] = req.stop_sequences[:5]
+
+    if gen_config:
+        payload["generationConfig"] = gen_config
 
     return payload
 
@@ -434,5 +594,313 @@ class GeminiProxyClient:
             yield f"data: {json.dumps(final_usage_chunk)}\n\n"
 
         yield "data: [DONE]\n\n"
+
+    async def generate_anthropic_completion(
+        self,
+        request: AnthropicMessageRequest
+    ) -> Tuple[AnthropicMessageResponse, Dict[str, int]]:
+        """Handles non-streaming Anthropic Messages API completion with region fallback."""
+        model = resolve_model_name(request.model)
+        primary_region = adc_manager.get_region()
+        fallback_region = "us-central1" if primary_region == "global" else "global"
+
+        token = adc_manager.get_access_token()
+        payload = build_gemini_payload_from_anthropic(request)
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            url = self._get_endpoint_url(model, stream=False, region=primary_region)
+            response = await client.post(url, json=payload, headers=headers)
+
+            # If 404 in primary region, try fallback region
+            if response.status_code == 404:
+                fallback_url = self._get_endpoint_url(model, stream=False, region=fallback_region)
+                fb_response = await client.post(fallback_url, json=payload, headers=headers)
+                if fb_response.status_code == 200:
+                    response = fb_response
+
+            if response.status_code != 200:
+                error_data = {}
+                try:
+                    error_data = response.json()
+                except Exception:
+                    error_data = {"error": response.text}
+                logger.error(f"Vertex AI Anthropic error: {response.status_code} - {error_data}")
+                raise RuntimeError(f"Vertex AI error ({response.status_code}): {json.dumps(error_data)}")
+
+            data = response.json()
+
+        anthropic_content: List[Dict[str, Any]] = []
+        stop_reason = "end_turn"
+        candidates = data.get("candidates", [])
+        if candidates:
+            first_candidate = candidates[0]
+            finish_r = first_candidate.get("finishReason", "STOP")
+            if finish_r in ("MAX_TOKENS", "LENGTH"):
+                stop_reason = "max_tokens"
+
+            content_obj = first_candidate.get("content", {})
+            parts = content_obj.get("parts", [])
+            for p in parts:
+                if "text" in p and p["text"]:
+                    anthropic_content.append({
+                        "type": "text",
+                        "text": p["text"]
+                    })
+                elif "functionCall" in p:
+                    fn = p["functionCall"]
+                    tool_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                    anthropic_content.append({
+                        "type": "tool_use",
+                        "id": tool_id,
+                        "name": fn.get("name"),
+                        "input": fn.get("args", {})
+                    })
+                    stop_reason = "tool_use"
+
+        if not anthropic_content:
+            anthropic_content.append({"type": "text", "text": ""})
+
+        usage_meta = data.get("usageMetadata", {})
+        prompt_tokens = usage_meta.get("promptTokenCount", 0)
+        completion_tokens = usage_meta.get("candidatesTokenCount", 0)
+        total_tokens = usage_meta.get("totalTokenCount", prompt_tokens + completion_tokens)
+
+        msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+        result = AnthropicMessageResponse(
+            id=msg_id,
+            type="message",
+            role="assistant",
+            model=request.model,
+            content=anthropic_content,
+            stop_reason=stop_reason,
+            stop_sequence=None,
+            usage=AnthropicUsage(
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens
+            )
+        )
+
+        tokens_info = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens
+        }
+
+        return result, tokens_info
+
+    async def stream_anthropic_completion(
+        self,
+        request: AnthropicMessageRequest
+    ) -> AsyncGenerator[str, None]:
+        """
+        Proxies Vertex AI SSE stream and translates to Anthropic Messages SSE protocol:
+        - event: message_start
+        - event: content_block_start
+        - event: content_block_delta
+        - event: content_block_stop
+        - event: message_delta
+        - event: message_stop
+        """
+        model = resolve_model_name(request.model)
+        primary_region = adc_manager.get_region()
+        fallback_region = "us-central1" if primary_region == "global" else "global"
+
+        token = adc_manager.get_access_token()
+        payload = build_gemini_payload_from_anthropic(request)
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+        # 1. message_start event
+        msg_start_event = {
+            "type": "message_start",
+            "message": {
+                "id": msg_id,
+                "type": "message",
+                "role": "assistant",
+                "model": request.model,
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 1
+                }
+            }
+        }
+        yield f"event: message_start\ndata: {json.dumps(msg_start_event)}\n\n"
+
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        block_index = 0
+        text_block_open = False
+        stop_reason = "end_turn"
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            url = self._get_endpoint_url(model, stream=True, region=primary_region)
+            stream_ctx = client.stream("POST", url, json=payload, headers=headers)
+            resp = await stream_ctx.__aenter__()
+
+            if resp.status_code == 404:
+                await stream_ctx.__aexit__(None, None, None)
+                fallback_url = self._get_endpoint_url(model, stream=True, region=fallback_region)
+                stream_ctx = client.stream("POST", fallback_url, json=payload, headers=headers)
+                resp = await stream_ctx.__aenter__()
+
+            try:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    err_str = body.decode("utf-8", errors="replace")
+                    logger.error(f"Vertex AI Stream error: {resp.status_code} - {err_str}")
+                    err_event = {
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": f"Vertex AI Error: {err_str}"
+                        }
+                    }
+                    yield f"event: error\ndata: {json.dumps(err_event)}\n\n"
+                    return
+
+                buffer = ""
+                async for chunk in resp.aiter_text():
+                    buffer += chunk
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+
+                        raw_data = line[5:].strip()
+                        if not raw_data:
+                            continue
+
+                        try:
+                            parsed = json.loads(raw_data)
+
+                            usage_meta = parsed.get("usageMetadata", {})
+                            if usage_meta:
+                                total_prompt_tokens = usage_meta.get("promptTokenCount", total_prompt_tokens)
+                                total_completion_tokens = usage_meta.get("candidatesTokenCount", total_completion_tokens)
+
+                            candidates = parsed.get("candidates", [])
+                            if not candidates:
+                                continue
+
+                            cand = candidates[0]
+                            content = cand.get("content", {})
+                            parts = content.get("parts", [])
+                            finish_r = cand.get("finishReason")
+                            if finish_r in ("MAX_TOKENS", "LENGTH"):
+                                stop_reason = "max_tokens"
+
+                            for p in parts:
+                                if "text" in p and p["text"]:
+                                    text_piece = p["text"]
+                                    if not text_block_open:
+                                        # Start text block
+                                        start_block = {
+                                            "type": "content_block_start",
+                                            "index": block_index,
+                                            "content_block": {"type": "text", "text": ""}
+                                        }
+                                        yield f"event: content_block_start\ndata: {json.dumps(start_block)}\n\n"
+                                        text_block_open = True
+
+                                    # Emit text delta
+                                    delta_block = {
+                                        "type": "content_block_delta",
+                                        "index": block_index,
+                                        "delta": {"type": "text_delta", "text": text_piece}
+                                    }
+                                    yield f"event: content_block_delta\ndata: {json.dumps(delta_block)}\n\n"
+
+                                elif "functionCall" in p:
+                                    # If text block was open, close it first
+                                    if text_block_open:
+                                        stop_block = {
+                                            "type": "content_block_stop",
+                                            "index": block_index
+                                        }
+                                        yield f"event: content_block_stop\ndata: {json.dumps(stop_block)}\n\n"
+                                        text_block_open = False
+                                        block_index += 1
+
+                                    fn = p["functionCall"]
+                                    fn_name = fn.get("name", "function_call")
+                                    fn_args = fn.get("args", {})
+                                    tool_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                                    stop_reason = "tool_use"
+
+                                    # Start tool_use block
+                                    start_tool = {
+                                        "type": "content_block_start",
+                                        "index": block_index,
+                                        "content_block": {
+                                            "type": "tool_use",
+                                            "id": tool_id,
+                                            "name": fn_name,
+                                            "input": {}
+                                        }
+                                    }
+                                    yield f"event: content_block_start\ndata: {json.dumps(start_tool)}\n\n"
+
+                                    # Delta input_json
+                                    tool_delta = {
+                                        "type": "content_block_delta",
+                                        "index": block_index,
+                                        "delta": {
+                                            "type": "input_json_delta",
+                                            "partial_json": json.dumps(fn_args)
+                                        }
+                                    }
+                                    yield f"event: content_block_delta\ndata: {json.dumps(tool_delta)}\n\n"
+
+                                    # Stop tool block
+                                    stop_tool = {
+                                        "type": "content_block_stop",
+                                        "index": block_index
+                                    }
+                                    yield f"event: content_block_stop\ndata: {json.dumps(stop_tool)}\n\n"
+                                    block_index += 1
+
+                        except json.JSONDecodeError:
+                            continue
+            finally:
+                await stream_ctx.__aexit__(None, None, None)
+
+        # Close any lingering text block
+        if text_block_open:
+            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+
+        # If no blocks were produced at all, produce an empty text block
+        if block_index == 0 and not text_block_open:
+            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+
+        # message_delta event
+        msg_delta_event = {
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": stop_reason,
+                "stop_sequence": None
+            },
+            "usage": {
+                "output_tokens": max(total_completion_tokens, 1)
+            }
+        }
+        yield f"event: message_delta\ndata: {json.dumps(msg_delta_event)}\n\n"
+
+        # message_stop event
+        yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
 
 gemini_client = GeminiProxyClient()

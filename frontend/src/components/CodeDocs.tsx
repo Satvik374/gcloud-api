@@ -23,22 +23,136 @@ export const CodeDocs: React.FC<CodeDocsProps> = ({
   apiKeys,
   activeSecretKey,
 }) => {
-  const [selectedLang, setSelectedLang] = useState<'python-sdk' | 'python-requests' | 'js-sdk' | 'js-fetch' | 'curl'>('python-sdk');
+  const [selectedLang, setSelectedLang] = useState<
+    'claude-code' | 'anthropic-python' | 'anthropic-js' | 'anthropic-curl' | 'python-sdk' | 'js-sdk' | 'curl' | 'python-requests' | 'js-fetch'
+  >('claude-code');
   const [copied, setCopied] = useState(false);
+
+  // Host URL without /v1 for Anthropic SDKs and Claude Code
+  const hostUrl = baseUrl.replace(/\/v1\/?$/, '');
 
   // Key to display in snippets
   const activeKeyDisplay = activeSecretKey.trim() || (apiKeys.length > 0 ? `${apiKeys[0].masked_key}` : 'sk-gem-live-YOUR_API_KEY');
 
   const languages = [
+    { id: 'claude-code', label: 'Claude Code CLI', icon: Terminal },
+    { id: 'anthropic-python', label: 'Python (Anthropic SDK)', icon: FileCode },
+    { id: 'anthropic-js', label: 'Node / JS (Anthropic SDK)', icon: FileCode },
+    { id: 'anthropic-curl', label: 'cURL (Anthropic)', icon: Terminal },
     { id: 'python-sdk', label: 'Python (OpenAI SDK)', icon: FileCode },
     { id: 'js-sdk', label: 'Node / JS (OpenAI SDK)', icon: FileCode },
-    { id: 'curl', label: 'cURL', icon: Terminal },
+    { id: 'curl', label: 'cURL (OpenAI)', icon: Terminal },
     { id: 'python-requests', label: 'Python (requests)', icon: FileCode },
-    { id: 'js-fetch', label: 'JavaScript (fetch)', icon: FileCode },
+    { id: 'js-fetch', label: 'JS (fetch)', icon: FileCode },
   ];
 
   const getCodeSnippet = (): string => {
     switch (selectedLang) {
+      case 'claude-code':
+        return `# 1. Configure Claude Code CLI to connect to this local Gateway
+# In Windows PowerShell:
+$env:ANTHROPIC_BASE_URL = "${hostUrl}"
+$env:ANTHROPIC_AUTH_TOKEN = "${activeKeyDisplay}"
+$env:ANTHROPIC_API_KEY = "${activeKeyDisplay}"
+
+# Launch Claude Code:
+claude
+
+# -------------------------------------------------------------
+# Or in macOS / Linux (bash/zsh):
+export ANTHROPIC_BASE_URL="${hostUrl}"
+export ANTHROPIC_AUTH_TOKEN="${activeKeyDisplay}"
+export ANTHROPIC_API_KEY="${activeKeyDisplay}"
+
+claude
+# Requests, tools, and streams are automatically proxied to Vertex AI Gemini!`;
+
+      case 'anthropic-python':
+        return `# pip install anthropic
+import anthropic
+
+# Initialize Anthropic client pointing to the Gateway
+client = anthropic.Anthropic(
+    base_url="${hostUrl}",
+    api_key="${activeKeyDisplay}"
+)
+
+# Standard non-streaming completion
+# (Claude model names automatically resolve to Gemini models)
+message = client.messages.create(
+    model="claude-3-5-sonnet-20241022",
+    max_tokens=1024,
+    messages=[
+        {"role": "user", "content": "Explain quantum computing in one sentence."}
+    ]
+)
+print(message.content[0].text)
+
+# Real-time streaming
+with client.messages.stream(
+    model="claude-3-5-sonnet-20241022",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Count from 1 to 5"}]
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+`;
+
+      case 'anthropic-js':
+        return `// npm install @anthropic-ai/sdk
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "${hostUrl}",
+  apiKey: "${activeKeyDisplay}",
+});
+
+async function main() {
+  const stream = await client.messages.stream({
+    model: "claude-3-5-sonnet-20241022",
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "Write a haiku about APIs." }],
+  });
+
+  for await (const event of stream) {
+    if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+      process.stdout.write(event.delta.text);
+    }
+  }
+}
+
+main();
+`;
+
+      case 'anthropic-curl':
+        return `# Anthropic Messages API (Non-Streaming)
+curl -X POST "${hostUrl}/v1/messages" \\
+  -H "x-api-key: ${activeKeyDisplay}" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "Hello via Anthropic Messages endpoint!"}
+    ]
+  }'
+
+# Anthropic Messages API (Real-Time SSE Streaming)
+curl -N -X POST "${hostUrl}/v1/messages" \\
+  -H "x-api-key: ${activeKeyDisplay}" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "Count from 1 to 5"}
+    ],
+    "stream": true
+  }'
+`;
+
       case 'python-sdk':
         return `# pip install openai
 from openai import OpenAI
@@ -101,7 +215,7 @@ main();
 `;
 
       case 'curl':
-        return `# Standard non-streaming request
+        return `# Standard OpenAI-compatible non-streaming request
 curl -X POST "${baseUrl}/chat/completions" \\
   -H "Authorization: Bearer ${activeKeyDisplay}" \\
   -H "Content-Type: application/json" \\
@@ -223,18 +337,34 @@ streamGemini();
           <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs space-y-3 text-xs">
             <h3 className="font-semibold text-slate-900 text-xs flex items-center gap-2">
               <Globe className="w-4 h-4 text-slate-700" />
-              Connection Specifications
+              Dual-Protocol Connection Specifications
             </h3>
-            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 font-mono space-y-2">
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 font-mono space-y-2.5">
               <div>
                 <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-sans">OpenAI Base URL</span>
                 <span className="text-xs text-slate-900 font-medium select-all">{baseUrl}</span>
               </div>
               <div className="pt-2 border-t border-slate-200/60">
-                <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-sans">HTTP Auth Header</span>
-                <span className="text-xs text-slate-900 font-medium">Authorization: Bearer &lt;YOUR_API_KEY&gt;</span>
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-sans">Anthropic / Claude Code Base URL</span>
+                <span className="text-xs text-slate-900 font-medium select-all">{hostUrl}</span>
+              </div>
+              <div className="pt-2 border-t border-slate-200/60">
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-sans">HTTP Auth Headers</span>
+                <span className="text-xs text-slate-900 font-medium block">OpenAI: Authorization: Bearer &lt;KEY&gt;</span>
+                <span className="text-xs text-slate-900 font-medium block">Anthropic: x-api-key: &lt;KEY&gt;</span>
               </div>
             </div>
+          </div>
+
+          {/* Claude Code CLI */}
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs text-xs">
+            <h4 className="font-semibold text-slate-900 mb-1.5 flex items-center gap-2">
+              <Terminal className="w-4 h-4 text-amber-600 shrink-0" />
+              Claude Code CLI Integration
+            </h4>
+            <p className="text-slate-600 leading-relaxed">
+              Configure <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-slate-900">ANTHROPIC_BASE_URL={hostUrl}</code> and <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-slate-900">ANTHROPIC_AUTH_TOKEN</code> in your terminal. When you launch <code className="font-mono bg-slate-100 px-1 py-0.5 rounded text-slate-900">claude</code>, all commands, tool calls, and SSE streams automatically proxy to Vertex AI Gemini.
+            </p>
           </div>
 
           {/* IDEs: Cursor & VS Code */}
@@ -252,10 +382,10 @@ streamGemini();
           <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs text-xs">
             <h4 className="font-semibold text-slate-900 mb-1.5 flex items-center gap-2">
               <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
-              LangChain & LlamaIndex
+              LangChain & Anthropic / OpenAI SDKs
             </h4>
             <p className="text-slate-600 leading-relaxed">
-              Initialize with standard OpenAI classes: <code className="font-mono bg-slate-100 px-1 py-0.5 rounded text-slate-900">ChatOpenAI(base_url="{baseUrl}", api_key="...")</code>. All tool calling, prompts, and agent chains route directly to Gemini.
+              All keys work automatically with either <code className="font-mono bg-slate-100 px-1 py-0.5 rounded text-slate-900">openai.OpenAI</code> or <code className="font-mono bg-slate-100 px-1 py-0.5 rounded text-slate-900">anthropic.Anthropic</code> without any separate key generation.
             </p>
           </div>
 
@@ -315,18 +445,22 @@ streamGemini();
             <span className="text-[11px] font-semibold text-slate-900 uppercase tracking-wider block mb-2">
               Gateway Endpoints Reference
             </span>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
+              <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200">
+                <span className="font-mono text-slate-900 font-semibold text-[11px] block">POST /v1/messages</span>
+                <span className="text-slate-500 text-[11px]">Anthropic Messages & SSE</span>
+              </div>
               <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200">
                 <span className="font-mono text-slate-900 font-semibold text-[11px] block">POST /v1/chat/completions</span>
-                <span className="text-slate-500 text-[11px]">Chat completions & streaming SSE</span>
+                <span className="text-slate-500 text-[11px]">OpenAI Chat completions</span>
               </div>
               <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200">
                 <span className="font-mono text-slate-900 font-semibold text-[11px] block">GET /v1/models</span>
-                <span className="text-slate-500 text-[11px]">OpenAI model list schema</span>
+                <span className="text-slate-500 text-[11px]">OpenAI model list</span>
               </div>
               <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200">
                 <span className="font-mono text-slate-900 font-semibold text-[11px] block">GET /health</span>
-                <span className="text-slate-500 text-[11px]">ADC status & health checks</span>
+                <span className="text-slate-500 text-[11px]">ADC status checks</span>
               </div>
             </div>
           </div>

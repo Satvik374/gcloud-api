@@ -54,7 +54,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 Gemini Gateway
               </span>
               <span className="text-[11px] font-medium tracking-wide text-slate-500 hidden sm:inline">
-                OpenAI Provider
+                OpenAI & Anthropic Gateway
               </span>
             </div>
           </div>

@@ -321,7 +321,72 @@ main();
 
 ---
 
-## Supported Gemini Models
+### 7. Claude Code CLI Integration
+Claude Code communicates via the Anthropic Messages API. Point Claude Code to this gateway using your generated key:
+
+**Windows PowerShell:**
+```powershell
+$env:ANTHROPIC_BASE_URL = "http://localhost:8000"
+$env:ANTHROPIC_AUTH_TOKEN = "sk-gem-live-YOUR_KEY"
+$env:ANTHROPIC_API_KEY = "sk-gem-live-YOUR_KEY"
+
+# Start Claude Code
+claude
+```
+
+**macOS / Linux (Bash / Zsh):**
+```bash
+export ANTHROPIC_BASE_URL="http://localhost:8000"
+export ANTHROPIC_AUTH_TOKEN="sk-gem-live-YOUR_KEY"
+export ANTHROPIC_API_KEY="sk-gem-live-YOUR_KEY"
+
+# Start Claude Code
+claude
+```
+
+*Every key automatically authorizes both OpenAI and Anthropic endpoints. Claude model names (`claude-3-7-sonnet`, `claude-3-5-sonnet`, `claude-3-5-haiku`) automatically route to the corresponding Gemini model!*
+
+---
+
+### 8. Official Anthropic Python & Node.js SDKs
+
+**Python (`anthropic`):**
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8000",
+    api_key="sk-gem-live-YOUR_KEY"
+)
+
+message = client.messages.create(
+    model="claude-3-5-sonnet-20241022",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello from Anthropic SDK!"}]
+)
+print(message.content[0].text)
+```
+
+**Node.js (`@anthropic-ai/sdk`):**
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "http://localhost:8000",
+  apiKey: "sk-gem-live-YOUR_KEY",
+});
+
+const response = await client.messages.create({
+  model: "claude-3-5-sonnet-20241022",
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello from Anthropic SDK!" }],
+});
+console.log(response.content[0].text);
+```
+
+---
+
+## Supported Gemini & Claude Model Aliases
 
 | Model ID | Context Window | Max Output | Modalities | Best For |
 | :--- | :--- | :--- | :--- | :--- |

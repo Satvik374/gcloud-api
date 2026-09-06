@@ -45,6 +45,7 @@ def main():
   - Google Cloud:         {gcp_info}
   - Developer Portal UI:  http://localhost:{port}/
   - OpenAI Base URL:      http://localhost:{port}/v1
+  - Anthropic Base URL:   http://localhost:{port} (or /v1)
   - Health Check:         http://localhost:{port}/health
   - Interactive Docs:     http://localhost:{port}/docs
   =============================================================

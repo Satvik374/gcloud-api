@@ -46,6 +46,7 @@ app.add_middleware(
 
 # Register API Routers
 app.include_router(gateway.router)
+app.include_router(gateway.anthropic_router)
 app.include_router(portal.router)
 
 @app.get("/health")
